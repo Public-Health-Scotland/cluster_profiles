@@ -2,6 +2,7 @@
 
 ## Load packages & initial set up ----------------------------------------------
 library(tidyverse)
+library(lubridate)
 library(data.table)
 source("Read in data.R")
 source("Render Functions.R")
