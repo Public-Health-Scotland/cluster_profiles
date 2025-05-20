@@ -2,8 +2,9 @@
 
 ## Load packages & initial set up ----------------------------------------------
 library(tidyverse)
-library(lubridate)
 library(data.table)
+library(glue)
+library(janitor)
 source("Read in data.R")
 source("Render Functions.R")
 
@@ -12,38 +13,48 @@ source("Render Functions.R")
 # Set report level - can take two values:
 # "cluster" - produces a cluster level dashboard with practice level data for all practice in the cluster
 # "practice" - produces same dashboard but with practice data for only one single practice
-report_level <- "practice"
+report_level <- "cluster"
 
 # Set Health Board that you want to generate profiles for
 # This can be a vector containing multiple health boards
-HB <-  c("NHS Ayrshire and Arran",
-         "NHS Borders",
-         "NHS Dumfries and Galloway",
-         "NHS Fife",
-         "NHS Forth Valley",
-         "NHS Grampian",
-         "NHS Greater Glasgow and Clyde",
-         "NHS Highland",
-         "NHS Lanarkshire",
-         "NHS Lothian",
-         "NHS Orkney",
-         "NHS Shetland",
-         "NHS Tayside",
-         "NHS Western Isles",
-         "") # need the empty quotes to get Scotland
+HB <- profiles |> 
+  distinct(NHS_BOARD) |> 
+  filter(NHS_BOARD != "") |> 
+  pull()
+
+# HB <-  c("NHS Ayrshire and Arran",
+#          "NHS Borders",
+#          "NHS Dumfries and Galloway",
+#          "NHS Fife",
+#          "NHS Forth Valley",
+#          "NHS Grampian",
+#          "NHS Greater Glasgow and Clyde",
+#          "NHS Highland",
+#          "NHS Lanarkshire",
+#          "NHS Lothian",
+#          "NHS Orkney",
+#          "NHS Shetland",
+#          "NHS Tayside",
+#          "NHS Western Isles",
+#          "NHS Scotland")
+
+# need to specify NHS Scotland 
+#HB <- c("NHS Borders","NHS Scotland")
+
+nti <- c("NTI01c", "NTI05b", "NTI08b", "NTI08d", "NTI09b", "NTI08a", "NTI08i")
 
 
 ## Filter Data to relevant health boards ---------------------------------------
 
-profiles <- profiles %>% 
-  janitor::clean_names() %>% 
+profiles <- profiles %>%
+  janitor::clean_names() %>%
   filter(nhs_board %in% HB)
 
 ## Generate report -------------------------------------------------------------
 if(report_level == "cluster"){
   # clusts <- unique(profiles$geography_name[profiles$geography_type == "GP Cluster"]) # produce all cluster profiles
   # clusts <- c("Irvine Valley", "Irvine, Kilwinning, Dundonald", "Troon Cluster") # can produce for a subset of clusters
-  # clusts <- "East Lothian" # can produce for a single cluster
+   clusts <- "Borders south" # can produce for a single cluster
   walk(clusts, ~generate_cluster_profile(.x, profiles))
 }else if(report_level == "practice"){
   # pracs <- unique(profiles$geography_name[profiles$geography_type == "GP Practice"]) # Produce all practice profiles
