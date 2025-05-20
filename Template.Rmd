@@ -5,6 +5,7 @@ output:
     orientation: rows
     vertical_layout: fill
     css: phs_style.css
+    runtime: shiny
 ---
 
 ```{r setup, include=FALSE}
@@ -13,6 +14,7 @@ library(crosstalk)
 library(tidyverse)
 library(plotly)
 library(phsstyles)
+library(shiny)
 
 clust <- filter(for_clust, geography_type != "GP Practice")
 prac <- filter(for_clust, geography_type == "GP Practice")
@@ -53,6 +55,176 @@ Notes could either go on this page, or could go on a separate "Notes" Page.
 Demographics {data-navmenu="Cluster Level Data" data-navmenu-icon="fa-cogs"}
 ================================================================================
 
+sidebar {.sidebar}
+--------------------------------------------------------------------------------
+
+```{r create shared DEMOG data for filters}
+
+# setting up a lookup on quarter
+demographic_data <- filter(clust, domain %in% c("DEMOGRAPHICS")) |>
+  # reduce to required columns
+  select(quarter, fy, fq, geography_name, indicator, age_band, numerator) |> 
+  # create a variable to hold the month range for the quarter in text (for the filter)
+  mutate(period = case_when(fq == "Q1" ~ "Apr-Jun", 
+                            fq == "Q2" ~ "Jul-Sep",
+                            fq == "Q3" ~ "Oct-Dec", 
+                            fq == "Q4" ~ "Jan-Mar", .default = "")) |> 
+  # create a financial year and quarter label
+  mutate(fin_quart_year = paste0(fy, "/", as.numeric(substr(fy, 2, 4))+1, " (", fq, "): ", period))
+
+
+# Data for the age gender chart
+demog_clust_age <- demographic_data |>  
+  # filter to male/female practice populations
+  filter(indicator %in% c("Male", "Female")) |> 
+  arrange(quarter, geography_name, indicator, age_band) |> 
+  distinct(quarter, geography_name, indicator, age_band, .keep_all = TRUE) |>  
+  mutate(age_band = case_when(age_band == "0_4" ~"0-4", 
+                              age_band == "05_14" ~ "5-14",
+                              age_band == "15_24" ~ "15-24",
+                              age_band == "25_44" ~ "25-44",
+                              age_band == "45_64" ~ "45-64",
+                              age_band == "65_74" ~ "65-74",
+                              age_band == "75_84" ~ "75-84",
+                              age_band == "85plus" ~ "85+", .default = age_band)) |> 
+  mutate(age_band = factor(age_band, levels = c("All Ages", "0-4", "5-14", "15-24", 
+                                                "25-44", "45-64", "65-74", "75-84", "85+"))) |>  
+  arrange(quarter, geography_name, indicator, age_band) |> 
+  mutate(absolute_numerator = format(numerator, big.mark = ",")) |> 
+  mutate(numerator = ifelse(indicator == "Female", -numerator, numerator)) |> 
+  # create an identifier column for the interacting graphs
+  mutate(identifier = paste0(fin_quart_year, "_", geography_name))
+
+demog_clust_age_shared <- SharedData$new(demog_clust_age, key= ~identifier, group = "demographics") 
+
+
+# Data for the SIMD chart
+demog_clust_simd <- demographic_data |> 
+  # filter to SIMD indicators
+  filter(indicator %in% c("SIMD Quintile 1", "SIMD Quintile 2", "SIMD Quintile 3", "SIMD Quintile 4", "SIMD Quintile 5"))  |> 
+  select(!age_band) |> 
+  arrange(quarter, geography_name, indicator) |> 
+  distinct(quarter, geography_name, indicator, .keep_all = TRUE) |> 
+  # rename for chart
+  mutate(indicator = case_when(indicator == "SIMD Quintile 1" ~ "1", 
+                               indicator == "SIMD Quintile 2" ~ "2", 
+                               indicator == "SIMD Quintile 3" ~ "3", 
+                               indicator == "SIMD Quintile 4" ~ "4", 
+                               indicator == "SIMD Quintile 5" ~ "5", .default = "")) |> 
+  # create an identifier column for the interacting graphs
+  mutate(identifier = paste0(fin_quart_year, "_", geography_name))
+
+demog_clust_simd_shared <- SharedData$new(demog_clust_simd, key = ~identifier, group = "demographics")
+
+
+# create a lookup dataframe based on the unique combinations of period and geog name
+period_and_geography_lookup <- demog_clust_age |> 
+  distinct(fin_quart_year, geography_name, identifier)
+
+period_and_geography_lookup_shared <- SharedData$new(period_and_geography_lookup, key= ~identifier, group = "demographics") 
+
+
+```
+
+```{r crosstalk filters DEMOG}
+crosstalk::filter_select(
+    id = "period_demog_clust",
+    label = "Quarter",
+    sharedData = period_and_geography_lookup_shared,
+    group = ~fin_quart_year,
+    multiple = FALSE
+  )
+
+crosstalk::filter_select(
+    id = "geog_name_demog_clust",
+    label = "Location",
+    sharedData = period_and_geography_lookup_shared,
+    group = ~geography_name,
+    multiple = FALSE
+  )
+
+
+filtered_data <- reactive({
+demog_clust_age_shared$data(withSelection = TRUE) })
+
+
+```
+
+Row 
+--------------------------------------------------------------------------------
+
+###
+
+```{r}
+
+# people registered in the quarter
+  
+renderValueBox({ people <- sum(abs(filtered_data()$numerator), na.rm = TRUE)
+                               
+valueBox(value = format(people, big.mark = ","), color = "#3F3685", caption = "people registered in the latest quarter."
+) })
+
+```
+
+###
+
+```{r}
+
+valueBox(value = "25%", color = "#3F3685", caption = "of people aged 65+. ")
+
+```
+
+###
+
+```{r}
+
+valueBox(value = "40%", color = "#3F3685", caption = "of people living in the two most deprived quintiles.")
+
+```
+
+
+Row
+--------------------------------------------------------------------------------
+
+### Age and gender breakdown
+
+```{r}
+underlying_data <- demog_clust_age_shared$data
+max_pop <- ceiling(max(abs(underlying_data$numerator)))
+tick_vals = seq(-max_pop, max_pop, length.out = 5)
+tick_text = abs(tick_vals)
+
+# extract the latest quarter and save in a variable to the environment for using as the default filter value
+
+plot_ly(demog_clust_age_shared, x = ~numerator, y = ~age_band, color = ~indicator,
+        type = 'bar', orientation = 'h', text = ~absolute_numerator,
+        textposition = 'none', colors = c("#3F3685", "#9B4393"),
+        hovertemplate = paste("Age: %{y}","<br>Pop: %{text}")) %>%
+  layout(annotations = list(),
+    barmode = 'overlay',
+    yaxis = list(title = "", rangemode="tozero", fixedrange=TRUE),
+    xaxis = list(title = "", fixedrange=FALSE, tickangle = 0,
+                        tickvals = tick_vals,
+                        ticktext = tick_text),
+    title = '', xtitle = 'Population',
+    margin = list(pad = 4, t = 50, r = 30)) |>  # margin-paddings
+    config(displaylogo = F)
+    
+
+```
+
+
+### Individuals within each deprivation quintile (1 = most deprived, 5 = least deprived)
+
+```{r}
+plot_ly(demog_clust_simd_shared, x = ~indicator, y = ~numerator, marker = list(color = "#3F3685"), type = 'bar') %>%
+  layout(
+    barmode = 'relative'
+  )
+
+```
+
+
 
 Unscheduled Care {data-navmenu="Cluster Level Data"}
 ================================================================================
@@ -60,18 +232,19 @@ Unscheduled Care {data-navmenu="Cluster Level Data"}
 sidebar {.sidebar}
 --------------------------------------------------------------------------------
 
-```{r create shared data for filters}
-unsched_clust <- filter(clust, domain %in% c("A & E", "ACUTE", "OOH")) %>% 
+```{r create shared UC data for filters}
+unsched_clust0 <- filter(clust, domain %in% c("A & E", "ACUTE", "OOH")) %>% 
   distinct(geography_name, age_band, indicator, quarter, .keep_all = TRUE) %>% 
   mutate(age_band = factor(age_band, levels = c("All Ages", "Under 65", "65+"))) %>% 
   arrange(age_band, quarter)
-unsched_clust <- SharedData$new(unsched_clust)
+
+unsched_clust <- SharedData$new(unsched_clust0)
 
 ```
 
-```{r crosstalk filters}
+```{r crosstalk filters UC}
 crosstalk::filter_select(
-    id = "Indicator",
+    id = "indicator_uc",
     label = "Indicator",
     sharedData = unsched_clust,
     group = ~indicator,
@@ -79,13 +252,14 @@ crosstalk::filter_select(
   )
 
 crosstalk::filter_select(
-    id = "Age",
+    id = "age_uc",
     label = "Age",
     sharedData = unsched_clust,
     group = ~age_band,
     #selected="All Ages",
     multiple = FALSE
   )
+
 crosstalk::filter_checkbox(
   id = "Areas",
   label = "Choose areas to compare",
@@ -102,16 +276,38 @@ crosstalk::filter_checkbox(
 
 ```
 
-```{js}
-function filter_default(){
-  document.getElementById("Age").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
-  document.getElementById("Age").getElementsByClassName("selectized")[0].selectize.removeOption("");
-  document.getElementById("Indicator").getElementsByClassName("selectized")[0].selectize.setValue("Att Rate Per 1000 Pop",false)
-  document.getElementById("Indicator").getElementsByClassName("selectized")[0].selectize.removeOption("");
-}
+Row
+--------------------------------------------------------------------------------
 
-$(document).ready(filter_default);
+###
+
+```{r value box UB cluster A&E attendances ALL}
+
+ae_latest_clust <- unsched_clust0 |> filter(quarter == max(quarter), age_band == "All Ages", geography_name == name, 
+                                            indicator == "Att Rate Per 1000 Pop") |> pull(rate)
+
+ae_previous_clust <- unsched_clust0 |> filter(quarter == max(unsched_clust0$quarter)-months(3), age_band == "All Ages", geography_name == name, indicator == "Att Rate Per 1000 Pop") |> pull(rate)
+
+valueBox(value = round_half_up(ae_latest_clust), caption = glue("A&E attendances per 1,000 population for {name} in the latest quarter."), color = phs_colors("phs-blue"))
+
+
 ```
+
+###
+
+```{r value box UB cluster OOHs cases ALL}
+
+ooh_latest_clust <- unsched_clust0 |> filter(quarter == max(quarter), age_band == "All Ages", geography_name == name, 
+                                            indicator == "Out of hours attendance rate per 1000 population") |> pull(rate)
+
+ooh_previous_clust <- unsched_clust0 |> filter(quarter == max(unsched_clust0$quarter)-months(3), age_band == "All Ages", geography_name == name, indicator == "Out of hours attendance rate per 1000 population") |> pull(rate)
+
+valueBox(value = round_half_up(ooh_latest_clust), caption = glue("OOHs cases per 1,000 population for {name} in the latest quarter."), color = phs_colors("phs-blue"))
+
+
+```
+
+
 
 Row
 --------------------------------------------------------------------------------
@@ -124,19 +320,214 @@ plot_ly(unsched_clust,
         y = ~rate, 
         color = ~ geography_name, 
         colors = pal_clust,
-        mode = "lines+markers")
+        mode = "lines+markers") |> 
+  layout(yaxis = list(rangemode = "tozero"))
+
 ```
 
 Outpatient Appointments {data-navmenu="Cluster Level Data"}
 ================================================================================
+
+sidebar {.sidebar}
+--------------------------------------------------------------------------------
+
+```{r create shared outpatient data for filters}
+outpat_clust <- filter(clust, domain %in% c("OUTPATIENTS")) %>% 
+  distinct(geography_name, age_band, indicator, quarter, .keep_all = TRUE) %>% 
+  mutate(age_band = factor(age_band, levels = c("All Ages", "Under 65", "65+"))) %>% 
+  arrange(age_band, quarter)
+
+outpat_clust <- SharedData$new(outpat_clust)
+
+```
+
+```{r crosstalk filters outpatients}
+crosstalk::filter_select(
+    id = "indicator_op",
+    label = "Indicator",
+    sharedData = outpat_clust,
+    group = ~indicator,
+    multiple = FALSE
+  )
+
+crosstalk::filter_select(
+    id = "age_op",
+    label = "Age",
+    sharedData = outpat_clust,
+    group = ~age_band,
+    #selected="All Ages",
+    multiple = FALSE
+  )
+crosstalk::filter_checkbox(
+  id = "Areas",
+  label = "Choose areas to compare",
+  sharedData = outpat_clust,
+  group = ~geography_name
+)
+
+# crosstalk::filter_slider(
+#   "Financial Year", 
+#   "Financial Year", 
+#   fy_shared, 
+#   ~`Financial Year`, 
+#   width = "100%")
+
+```
+
+Row
+--------------------------------------------------------------------------------
+
+### Trend
+
+```{r}
+plot_ly(outpat_clust, 
+        x = ~quarter, 
+        y = ~rate, 
+        color = ~ geography_name, 
+        colors = pal_clust,
+        mode = "lines+markers") |> 
+  layout(yaxis = list(rangemode = "tozero"))
+
+```
+
 
 
 Prescribing {data-navmenu="Cluster Level Data"}
 ================================================================================
 
 
+sidebar {.sidebar}
+--------------------------------------------------------------------------------
+
+```{r create shared prescribing data for filters}
+presc_clust <- filter(clust, domain %in% c("PRESCRIBING") & !indicator %in% nti) %>% 
+  distinct(geography_name, age_band, indicator, quarter, .keep_all = TRUE) %>% 
+  mutate(age_band = factor(age_band, levels = c("All Ages", "Under 65", "65+"))) %>% 
+  arrange(age_band, quarter)
+
+presc_clust <- SharedData$new(presc_clust)
+
+```
+
+```{r crosstalk filters prescribing}
+crosstalk::filter_select(
+    id = "indicator_pis",
+    label = "Indicator",
+    sharedData = presc_clust,
+    group = ~indicator,
+    multiple = FALSE
+  )
+
+crosstalk::filter_select(
+    id = "age_pis",
+    label = "Age",
+    sharedData = presc_clust,
+    group = ~age_band,
+    #selected="All Ages",
+    multiple = FALSE
+  )
+crosstalk::filter_checkbox(
+  id = "Areas",
+  label = "Choose areas to compare",
+  sharedData = presc_clust,
+  group = ~geography_name
+)
+
+# crosstalk::filter_slider(
+#   "Financial Year", 
+#   "Financial Year", 
+#   fy_shared, 
+#   ~`Financial Year`, 
+#   width = "100%")
+
+```
+
+Row
+--------------------------------------------------------------------------------
+
+### Trend
+
+```{r}
+plot_ly(presc_clust, 
+        x = ~quarter, 
+        y = ~rate, 
+        color = ~ geography_name, 
+        colors = pal_clust,
+        mode = "lines+markers") |> 
+  layout(yaxis = list(rangemode = "tozero"))
+
+```
+
+
+
 National Therapeutic Indicators {data-navmenu="Cluster Level Data"}
 ================================================================================
+
+sidebar {.sidebar}
+--------------------------------------------------------------------------------
+
+```{r create shared nti data for filters}
+nti_clust <- filter(clust, domain %in% c("PRESCRIBING") & indicator %in% nti) %>% 
+  distinct(geography_name, age_band, indicator, quarter, .keep_all = TRUE) %>% 
+  mutate(age_band = factor(age_band, levels = c("All Ages", "Under 65", "65+"))) %>% 
+  arrange(age_band, quarter)
+
+nti_clust <- SharedData$new(nti_clust)
+
+```
+
+```{r crosstalk filters nti}
+crosstalk::filter_select(
+    id = "indicator_nti",
+    label = "Indicator",
+    sharedData = nti_clust,
+    group = ~indicator,
+    multiple = FALSE
+  )
+
+crosstalk::filter_select(
+    id = "age_nti",
+    label = "Age",
+    sharedData = nti_clust,
+    group = ~age_band,
+    #selected="All Ages",
+    multiple = FALSE
+  )
+crosstalk::filter_checkbox(
+  id = "Areas",
+  label = "Choose areas to compare",
+  sharedData = nti_clust,
+  group = ~geography_name
+)
+
+# crosstalk::filter_slider(
+#   "Financial Year", 
+#   "Financial Year", 
+#   fy_shared, 
+#   ~`Financial Year`, 
+#   width = "100%")
+
+```
+
+Row
+--------------------------------------------------------------------------------
+
+### Trend
+
+```{r}
+plot_ly(nti_clust, 
+        x = ~quarter, 
+        y = ~rate, 
+        color = ~ geography_name, 
+        colors = pal_clust,
+        mode = "lines+markers") |> 
+  layout(yaxis = list(rangemode = "tozero"))
+
+```
+
+
+
+
 
 <!-- Practice Level Tabs -->
 
@@ -150,9 +541,8 @@ Unscheduled Care {data-navmenu="Practice Level Data"}
 sidebar {.sidebar}
 --------------------------------------------------------------------------------
 
-```{r}
-
-unsched_prac <- filter(for_clust, domain %in% c("A & E", "ACUTE", "OOH")) %>% 
+```{r create shared UC PRACTICE data for filters}
+unsched_prac <- filter(prac, domain %in% c("A & E", "ACUTE", "OOH")) %>% 
   distinct(geography_name, age_band, indicator, quarter, .keep_all = TRUE) %>% 
   mutate(age_band = factor(age_band, levels = c("All Ages", "Under 65", "65+"))) %>% 
   arrange(age_band, quarter)
@@ -161,7 +551,7 @@ unsched_prac <- SharedData$new(unsched_prac)
 
 ```{r}
 crosstalk::filter_select(
-    id = "Indicator_unsched_prac",
+    id = "indicator_uc_prac",
     label = "Indicator",
     sharedData = unsched_prac,
     group = ~indicator,
@@ -169,7 +559,7 @@ crosstalk::filter_select(
   )
 
 crosstalk::filter_select(
-    id = "Age_unsched_prac",
+    id = "age_uc_prac",
     label = "Age",
     sharedData = unsched_prac,
     group = ~age_band,
@@ -177,7 +567,7 @@ crosstalk::filter_select(
     multiple = FALSE
   )
 crosstalk::filter_checkbox(
-  id = "Areas_unsched_prac",
+  id = "areas_uc_prac",
   label = "Choose areas to compare",
   sharedData = unsched_prac,
   group = ~geography_name
@@ -190,18 +580,6 @@ crosstalk::filter_checkbox(
 #   ~`Financial Year`, 
 #   width = "100%")
 
-```
-
-```{js}
-function filter_default(){
-  document.getElementById("Age_unsched_prac").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false);
-  document.getElementById("Age_unsched_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
-  document.getElementById("Indicator_unsched_prac").getElementsByClassName("selectized")[0].selectize.setValue("Att Rate Per 1000 Pop",false);
-  document.getElementById("Indicator_unsched_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
-  document.getElementById("Areas_unsched_prac").getElementsByClassName("selectized")[0].selectize.setValue("NHS Scotland",false);
-}
-
-$(document).ready(filter_default);
 ```
 
 Row
@@ -217,7 +595,8 @@ plot_ly(unsched_prac,
         colors = pal_prac,
         linetype = ~ geography_name,
         linetypes = linetype_prac,
-        mode = "lines+markers")
+        mode = "lines+markers") |> 
+  layout(yaxis = list(rangemode = "tozero"))
 
 
 ```
@@ -226,35 +605,285 @@ plot_ly(unsched_prac,
 Outpatient Appointments {data-navmenu="Practice Level Data"}
 ================================================================================
 
+sidebar {.sidebar}
+--------------------------------------------------------------------------------
+
+```{r create shared outpatient PRACTICE data for filters}
+outpat_prac <- filter(prac, domain %in% c("OUTPATIENTS")) %>% 
+  distinct(geography_name, age_band, indicator, quarter, .keep_all = TRUE) %>% 
+  mutate(age_band = factor(age_band, levels = c("All Ages", "Under 65", "65+"))) %>% 
+  arrange(age_band, quarter)
+
+outpat_prac <- SharedData$new(outpat_prac)
+
+```
+
+```{r crosstalk filters outpatients PRACTICE}
+crosstalk::filter_select(
+    id = "indicator_op_prac",
+    label = "Indicator",
+    sharedData = outpat_prac,
+    group = ~indicator,
+    multiple = FALSE
+  )
+
+crosstalk::filter_select(
+    id = "age_op_prac",
+    label = "Age",
+    sharedData = outpat_prac,
+    group = ~age_band,
+    #selected="All Ages",
+    multiple = FALSE
+  )
+crosstalk::filter_checkbox(
+  id = "areas_op_prac",
+  label = "Choose areas to compare",
+  sharedData = outpat_prac,
+  group = ~geography_name
+)
+
+# crosstalk::filter_slider(
+#   "Financial Year", 
+#   "Financial Year", 
+#   fy_shared, 
+#   ~`Financial Year`, 
+#   width = "100%")
+
+```
+
+Row
+--------------------------------------------------------------------------------
+
+### Trend
+
+```{r}
+
+plot_ly(outpat_prac, 
+        x = ~quarter, 
+        y = ~rate, 
+        color = ~ geography_name, 
+        colors = pal_prac,
+        linetype = ~ geography_name,
+        linetypes = linetype_prac,
+        mode = "lines+markers") |> 
+  layout(yaxis = list(rangemode = "tozero"))
+
+```
+
+
+
+
 
 Prescribing {data-navmenu="Practice Level Data"}
 ================================================================================
 
 
+
+sidebar {.sidebar}
+--------------------------------------------------------------------------------
+
+```{r create shared prescribing practice data for filters}
+presc_prac <- filter(prac, domain %in% c("PRESCRIBING") & !indicator %in% nti) %>% 
+  distinct(geography_name, age_band, indicator, quarter, .keep_all = TRUE) %>% 
+  mutate(age_band = factor(age_band, levels = c("All Ages", "Under 65", "65+"))) %>% 
+  arrange(age_band, quarter)
+
+presc_prac <- SharedData$new(presc_prac)
+
+```
+
+```{r crosstalk filters prescribing practice}
+crosstalk::filter_select(
+    id = "indicator_pis_prac",
+    label = "Indicator",
+    sharedData = presc_prac,
+    group = ~indicator,
+    multiple = FALSE
+  )
+
+crosstalk::filter_select(
+    id = "age_pis_prac",
+    label = "Age",
+    sharedData = presc_prac,
+    group = ~age_band,
+    #selected="All Ages",
+    multiple = FALSE
+  )
+crosstalk::filter_checkbox(
+  id = "areas_pis_prac",
+  label = "Choose areas to compare",
+  sharedData = presc_prac,
+  group = ~geography_name
+)
+
+# crosstalk::filter_slider(
+#   "Financial Year", 
+#   "Financial Year", 
+#   fy_shared, 
+#   ~`Financial Year`, 
+#   width = "100%")
+
+```
+
+Row
+--------------------------------------------------------------------------------
+
+### Trend
+
+```{r}
+plot_ly(presc_prac, 
+        x = ~quarter, 
+        y = ~rate, 
+        color = ~ geography_name, 
+        colors = pal_prac,
+        linetype = ~ geography_name,
+        linetypes = linetype_prac,
+        mode = "lines+markers") |> 
+  layout(yaxis = list(rangemode = "tozero"))
+
+
+
+```
+
+
+
+
 National Therapeutic Indicators {data-navmenu="Practice Level Data"}
 ================================================================================
 
-Column {data-width=650}
------------------------------------------------------------------------
 
-### Chart A
+sidebar {.sidebar}
+--------------------------------------------------------------------------------
+
+```{r create shared NTI PRACTICE data for filters}
+nti_prac <- filter(prac, domain %in% c("PRESCRIBING") & indicator %in% nti) %>% 
+  distinct(geography_name, age_band, indicator, quarter, .keep_all = TRUE) %>% 
+  mutate(age_band = factor(age_band, levels = c("All Ages", "Under 65", "65+"))) %>% 
+  arrange(age_band, quarter)
+nti_prac <- SharedData$new(nti_prac)
+```
 
 ```{r}
+crosstalk::filter_select(
+    id = "indicator_nti_prac",
+    label = "Indicator",
+    sharedData = nti_prac,
+    group = ~indicator,
+    multiple = FALSE
+  )
+
+crosstalk::filter_select(
+    id = "age_nti_prac",
+    label = "Age",
+    sharedData = nti_prac,
+    group = ~age_band,
+    #selected="All Ages",
+    multiple = FALSE
+  )
+crosstalk::filter_checkbox(
+  id = "areas_nti_prac",
+  label = "Choose areas to compare",
+  sharedData = nti_prac,
+  group = ~geography_name
+)
+
+# crosstalk::filter_slider(
+#   "Financial Year", 
+#   "Financial Year", 
+#   fy_shared, 
+#   ~`Financial Year`, 
+#   width = "100%")
 
 ```
 
-Column {data-width=350}
------------------------------------------------------------------------
+Row
+--------------------------------------------------------------------------------
 
-### Chart B
+### Trend
 
 ```{r}
+
+plot_ly(nti_prac, 
+        x = ~quarter, 
+        y = ~rate, 
+        color = ~ geography_name, 
+        colors = pal_prac,
+        linetype = ~ geography_name,
+        linetypes = linetype_prac,
+        mode = "lines+markers") |> 
+  layout(yaxis = list(rangemode = "tozero"))
+
 
 ```
 
-### Chart C
 
-```{r}
 
+```{js}
+function filter_default(){
+console.log("Setting default values for filters...");
+
+// Demographics - Cluster
+console.log("Setting defaults for demographics cluster-level");
+  document.getElementById("period_demog_clust").getElementsByClassName("selectized")[0].selectize.setValue("2024/25 (Q2): Jul-Sep",false)
+  document.getElementById("period_demog_clust").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("geog_name_demog_clust").getElementsByClassName("selectized")[0].selectize.setValue("Borders south",false)
+  document.getElementById("geog_name_demog_clust").getElementsByClassName("selectized")[0].selectize.removeOption("");
+
+// Unscheduled Care - Cluster
+console.log("Setting default for age_uc");
+  document.getElementById("age_uc").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
+  document.getElementById("age_uc").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("indicator_uc").getElementsByClassName("selectized")[0].selectize.setValue("Att Rate Per 1000 Pop",false)
+  document.getElementById("indicator_uc").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  
+  //Outpatient - cluster
+  console.log("Setting default for age_op");
+  document.getElementById("age_op").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
+  document.getElementById("age_op").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("indicator_op").getElementsByClassName("selectized")[0].selectize.setValue("New OP Rate per 1,000 AllSpec",false)
+  document.getElementById("indicator_op").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  
+  //PIS - cluster
+  console.log("Setting default for age_pis");
+  document.getElementById("age_pis").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
+  document.getElementById("age_pis").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("indicator_pis").getElementsByClassName("selectized")[0].selectize.setValue("Antibacterial drugs cost/1,000 HB wtd list size",false)
+  document.getElementById("indicator_pis").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  
+  //NTIs - cluster
+  console.log("Setting default for age_nti");
+  document.getElementById("age_nti").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
+  document.getElementById("age_nti").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("indicator_nti").getElementsByClassName("selectized")[0].selectize.setValue("NTI01c",false)
+  document.getElementById("indicator_nti").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  
+  //UC - practice
+  console.log("Setting default for age_uc_prac");
+  document.getElementById("age_uc_prac").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
+  document.getElementById("age_uc_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("indicator_uc_prac").getElementsByClassName("selectized")[0].selectize.setValue("Att Rate Per 1000 Pop",false)
+  document.getElementById("indicator_uc_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  //document.getElementById("areas_uc_prac").getElementsByClassName("selectized")[0].selectize.setValue("NHS Scotland",false);
+  
+  //Outpatient - practice
+  console.log("Setting default for age_op_prac");
+  document.getElementById("age_op_prac").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
+  document.getElementById("age_op_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("indicator_op_prac").getElementsByClassName("selectized")[0].selectize.setValue("New OP Rate per 1,000 AllSpec",false)
+  document.getElementById("indicator_op_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  //document.getElementById("areas_op_prac").getElementsByClassName("selectized")[0].selectize.setValue("NHS Scotland",false);
+  document.getElementById("age_pis_prac").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
+  document.getElementById("age_pis_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("indicator_pis_prac").getElementsByClassName("selectized")[0].selectize.setValue("Antibacterial drugs cost/1,000 HB wtd list size",false)
+  document.getElementById("indicator_pis_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  //document.getElementById("areas_pis_prac").getElementsByClassName("selectized")[0].selectize.setValue("NHS Scotland",false);
+  document.getElementById("age_nti_prac").getElementsByClassName("selectized")[0].selectize.setValue("All Ages",false)
+  document.getElementById("age_nti_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  document.getElementById("indicator_nti_prac").getElementsByClassName("selectized")[0].selectize.setValue("NTI01c",false)
+  document.getElementById("indicator_nti_prac").getElementsByClassName("selectized")[0].selectize.removeOption("");
+  //document.getElementById("areas_nti_prac").getElementsByClassName("selectized")[0].selectize.setValue("NHS Scotland",false);
+}
+
+$(document).ready(filter_default);
 ```
 
