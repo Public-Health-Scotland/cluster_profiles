@@ -12,7 +12,7 @@ source("Render Functions.R")
 # Set report level - can take two values:
 # "cluster" - produces a cluster level dashboard with practice level data for all practice in the cluster
 # "practice" - produces same dashboard but with practice data for only one single practice
-report_level <- "practice"
+report_level <- "cluster"
 
 # Set Health Board that you want to generate profiles for
 # This can be a vector containing multiple health boards
@@ -31,6 +31,8 @@ HB <-  c("NHS Ayrshire and Arran",
          "NHS Tayside",
          "NHS Western Isles",
          "") # need the empty quotes to get Scotland
+
+HB <- "NHS Borders"
 
 
 ## Filter Data to relevant health boards ---------------------------------------
