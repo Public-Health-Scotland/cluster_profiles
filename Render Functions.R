@@ -9,6 +9,10 @@ generate_cluster_profile <- function(name, df){
   # Extract appropriate board and HSCP to filter comparator data
   board <- unique(df$nhs_board[df$geography_name == name])
   hscp_use <- unique(df$hscp[df$geography_name == name])
+  this_cluster <<- as.factor(name)
+  
+  # define variable for the latest quarter for default filter values
+  #latest_quart = 
   
   for_clust <- df %>% 
     filter(geography_name == name |      # Get Cluster Data
